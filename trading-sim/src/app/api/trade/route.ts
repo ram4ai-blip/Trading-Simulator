@@ -1,64 +1,107 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { STOCKS, NEWS_SCRIPT, TOTAL_DAYS, TRADING_MINUTES, BREAK_MINUTES } from '@/lib/gameData'
+
+const ADMIN_PASSWORD = 'marketadmin2024'
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  'https://skvwmspkbunmukuhmrda.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrdndtc3BrYnVubXVrdWhtcmRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MzE0NjgsImV4cCI6MjA5OTAwNzQ2OH0.qewOoU7oMqyI8fCLp4l0it7INfaMYz4VC67udbgTv7E'
 )
 
+function applyPriceChanges(currentPrices: { symbol: string; price: number }[], day: number, minute: number) {
+  const newsEvent = NEWS_SCRIPT.find(n => n.day === day && n.minute === minute)
+  if (!newsEvent) return currentPrices
+
+  return currentPrices.map(stock => {
+    const stockMeta = STOCKS.find(s => s.symbol === stock.symbol)
+    if (!stockMeta) return stock
+
+    const sectorImpact = newsEvent.impact[stockMeta.sector] ?? 0
+    const otherImpact = sectorImpact * 0.2
+    const actualImpact = newsEvent.impact[stockMeta.sector] !== undefined ? sectorImpact : otherImpact
+    const jitter = (Math.random() - 0.5) * 0.4
+    const changePct = (actualImpact + jitter) / 100
+
+    const newPrice = Math.max(stock.price * (1 + changePct), 1)
+    return { ...stock, price: Math.round(newPrice * 100) / 100 }
+  })
+}
+
 export async function POST(req: NextRequest) {
-  const { teamName, symbol, tradeType, quantity, price, day, minute } = await req.json()
+  const { action, password } = await req.json()
 
-  if (!teamName || !symbol || !tradeType || !quantity || !price) {
-    return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
+  if (password !== ADMIN_PASSWORD) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  if (quantity < 10 || quantity % 10 !== 0 || quantity > 100) {
-    return NextResponse.json({ error: 'Invalid quantity. Min 10, max 100, multiples of 10.' })
+  const { data: gs } = await supabase.from('game_state').select('*').eq('id', 1).single()
+  if (!gs) return NextResponse.json({ error: 'Game state not found' })
+
+  if (action === 'start') {
+    const initialPrices = STOCKS.map(s => ({
+      symbol: s.symbol, name: s.name, sector: s.sector,
+      price: s.basePrice, base_price: s.basePrice
+    }))
+    await supabase.from('stock_prices').upsert(initialPrices, { onConflict: 'symbol' })
+
+    const phaseEnds = new Date(Date.now() + TRADING_MINUTES * 60 * 1000)
+    await supabase.from('game_state').update({
+      status: 'trading', current_day: 1, current_minute: 1,
+      phase_ends_at: phaseEnds.toISOString(), started_at: new Date().toISOString()
+    }).eq('id', 1)
+
+    return NextResponse.json({ success: true, message: 'Game started' })
   }
 
-  // Get team
-  const { data: team, error: teamErr } = await supabase
-    .from('teams').select('cash').eq('name', teamName).single()
-  if (teamErr || !team) return NextResponse.json({ error: 'Team not found' })
+  if (action === 'next_minute') {
+    if (gs.status !== 'trading') return NextResponse.json({ error: 'Not in trading phase' })
 
-  const totalCost = quantity * price
+    const nextMinute = gs.current_minute + 1
 
-  if (tradeType === 'buy') {
-    if (team.cash < totalCost) return NextResponse.json({ error: 'Insufficient cash' })
-
-    // Deduct cash
-    const { error: cashErr } = await supabase
-      .from('teams').update({ cash: team.cash - totalCost }).eq('name', teamName)
-    if (cashErr) return NextResponse.json({ error: 'Trade failed' })
-
-    // Update holdings
-    const { data: existing } = await supabase
-      .from('holdings').select('*').eq('team_name', teamName).eq('symbol', symbol).single()
-
-    if (existing) {
-      const newQty = existing.quantity + quantity
-      const newAvg = ((existing.avg_buy_price * existing.quantity) + totalCost) / newQty
-      await supabase.from('holdings').update({ quantity: newQty, avg_buy_price: newAvg })
-        .eq('team_name', teamName).eq('symbol', symbol)
-    } else {
-      await supabase.from('holdings').insert({ team_name: teamName, symbol, quantity, avg_buy_price: price })
+    const { data: currentPrices } = await supabase.from('stock_prices').select('symbol, price')
+    if (currentPrices) {
+      const updated = applyPriceChanges(currentPrices, gs.current_day, gs.current_minute)
+      for (const p of updated) {
+        await supabase.from('stock_prices').update({ price: p.price, updated_at: new Date().toISOString() }).eq('symbol', p.symbol)
+      }
     }
-  } else {
-    // Sell
-    const { data: holding } = await supabase
-      .from('holdings').select('*').eq('team_name', teamName).eq('symbol', symbol).single()
 
-    if (!holding || holding.quantity < quantity) return NextResponse.json({ error: 'Not enough shares to sell' })
+    if (nextMinute > TRADING_MINUTES) {
+      if (gs.current_day >= TOTAL_DAYS) {
+        await supabase.from('game_state').update({ status: 'finished', phase_ends_at: null }).eq('id', 1)
+        return NextResponse.json({ success: true, message: 'Game finished' })
+      }
+      const phaseEnds = new Date(Date.now() + BREAK_MINUTES * 60 * 1000)
+      await supabase.from('game_state').update({ status: 'break', phase_ends_at: phaseEnds.toISOString() }).eq('id', 1)
+      return NextResponse.json({ success: true, message: 'Break started' })
+    }
 
-    const proceeds = quantity * price
-    await supabase.from('teams').update({ cash: team.cash + proceeds }).eq('name', teamName)
-    await supabase.from('holdings').update({ quantity: holding.quantity - quantity })
-      .eq('team_name', teamName).eq('symbol', symbol)
+    const phaseEnds = new Date(Date.now() + 60 * 1000)
+    await supabase.from('game_state').update({ current_minute: nextMinute, phase_ends_at: phaseEnds.toISOString() }).eq('id', 1)
+    return NextResponse.json({ success: true, message: `Minute ${nextMinute}` })
   }
 
-  // Log trade
-  await supabase.from('trades').insert({ team_name: teamName, symbol, trade_type: tradeType, quantity, price, day, minute })
+  if (action === 'next_day') {
+    if (gs.status !== 'break') return NextResponse.json({ error: 'Not in break phase' })
 
-  return NextResponse.json({ success: true })
+    const nextDay = gs.current_day + 1
+    const phaseEnds = new Date(Date.now() + TRADING_MINUTES * 60 * 1000)
+    await supabase.from('game_state').update({
+      status: 'trading', current_day: nextDay, current_minute: 1,
+      phase_ends_at: phaseEnds.toISOString()
+    }).eq('id', 1)
+    return NextResponse.json({ success: true, message: `Day ${nextDay} started` })
+  }
+
+  if (action === 'reset') {
+    await supabase.from('game_state').update({ status: 'waiting', current_day: 1, current_minute: 0, phase_ends_at: null, started_at: null }).eq('id', 1)
+    await supabase.from('trades').delete().neq('id', 0)
+    await supabase.from('holdings').delete().neq('id', 0)
+    await supabase.from('teams').update({ cash: 1000000 }).neq('name', '')
+    await supabase.from('stock_prices').delete().neq('symbol', '')
+    return NextResponse.json({ success: true, message: 'Game reset' })
+  }
+
+  return NextResponse.json({ error: 'Unknown action' })
 }
