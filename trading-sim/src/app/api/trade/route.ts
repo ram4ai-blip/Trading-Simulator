@@ -5,8 +5,8 @@ import { STOCKS, NEWS_SCRIPT, TOTAL_DAYS, TRADING_MINUTES, BREAK_MINUTES } from 
 const ADMIN_PASSWORD = 'marketadmin2024'
 
 const supabase = createClient(
-  'https://skvwmspkbunmukuhmrda.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNrdndtc3BrYnVubXVrdWhtcmRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MzE0NjgsImV4cCI6MjA5OTAwNzQ2OH0.qewOoU7oMqyI8fCLp4l0it7INfaMYz4VC67udbgTv7E'
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 )
 
 function applyPriceChanges(currentPrices: { symbol: string; price: number }[], day: number, minute: number) {
