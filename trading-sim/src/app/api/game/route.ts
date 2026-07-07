@@ -37,6 +37,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  if (action === 'verify') {
+    return NextResponse.json({ success: true })
+  }
+
   const { data: gs } = await supabase.from('game_state').select('*').eq('id', 1).single()
   if (!gs) return NextResponse.json({ error: 'Game state not found' })
 
