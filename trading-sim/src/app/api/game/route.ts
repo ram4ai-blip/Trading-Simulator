@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { STOCKS, NEWS_SCRIPT, TOTAL_DAYS, TRADING_MINUTES, BREAK_MINUTES, ADMIN_PASSWORD } from '@/lib/gameData'
+import { STOCKS, NEWS_SCRIPT, TOTAL_DAYS, TRADING_MINUTES, BREAK_MINUTES } from '@/lib/gameData'
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? 'marketadmin2024'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -101,7 +103,7 @@ export async function POST(req: NextRequest) {
     await supabase.from('game_state').update({ status: 'waiting', current_day: 1, current_minute: 0, phase_ends_at: null, started_at: null }).eq('id', 1)
     await supabase.from('trades').delete().neq('id', 0)
     await supabase.from('holdings').delete().neq('id', 0)
-    await supabase.from('teams').update({ cash: 1000000 }).neq('name', '')
+    await supabase.from('teams').delete().neq('name', '')
     await supabase.from('stock_prices').delete().neq('symbol', '')
     return NextResponse.json({ success: true, message: 'Game reset' })
   }
