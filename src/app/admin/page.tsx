@@ -73,7 +73,7 @@ export default function AdminPage() {
 
   async function gameAction(action: string) {
     setLoading(true)
-    const res = await fetch('/api/game', {
+    const res = await fetch('/api/admin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, password })
